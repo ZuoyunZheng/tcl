@@ -1,6 +1,6 @@
 _base_: "default.yml"
 data:
-  batch_size: 64
+  batch_size: 1024
   dataset:
     train:
       - gcc3m
@@ -10,7 +10,7 @@ model:
   type: TCL
   clip_model: ViT-B/16  # NOTE only ViT-based backbones are supported.
   ie_freeze: 11  # index [1 ~ 12]
-  ie_ignore_last_attn: true  # use MaskCLIP
+  ie_ignore_last_attn: true # use MaskCLIP
   masker:
     type: Masker
     decoder:
@@ -34,13 +34,18 @@ model:
   tv_w: 1.0
 
 train:
-  total_steps: 50000
-  warmup_steps: 15000
-  ust_steps: 30000  # train decoder only in this steps
-  base_lr: 3e-4
-  weight_decay: 0.05
-  min_lr: 4e-5
+  total_steps: 120000
+  ust_steps: 0
+  base_lr: 4e-5
+  weight_decay: 0.2
+  min_lr: 1e-6
   clip_grad: 5.0
+  warmup_steps: 15000
+  # ust_steps: 30000  # train decoder only in this steps
+  # base_lr: 3e-4
+  # weight_decay: 0.05
+  # min_lr: 4e-5
+  # clip_grad: 5.0
   optimizer:
     eps: 1e-6
 
@@ -49,11 +54,15 @@ evaluate:
   bg_thresh: 0.4
   kp_w: 0.3
 
+  # eval_freq: 5000
   eval_freq: 5000
   template: custom
   task:
-    - t_voc20
-    - t_context59
+    - voc20
+    # - t_context59
+  cls:
+    template: subset
+  eval_only: true
 
 checkpoint:
   save_topk: 0

@@ -7,6 +7,7 @@
 # ------------------------------------------------------------------------------
 import argparse
 import datetime
+from doctest import debug
 import os
 import os.path as osp
 import time
@@ -26,11 +27,11 @@ from mmcv.runner import get_dist_info, init_dist, set_random_seed
 from mmcv.utils import collect_env, get_git_hash
 from mmseg.apis import multi_gpu_test
 
-from datasets import build_loader, build_text_transform
+from datasets import build_loader, build_text_transform, imagenet_classes
 from models import build_model
 from omegaconf import OmegaConf, read_write
 from segmentation.evaluation import build_seg_dataloader, build_seg_dataset, build_seg_inference
-from timm.utils import AverageMeter
+from timm.utils import AverageMeter, accuracy
 from torchvision.utils import make_grid
 from utils import (
     build_optimizer,
@@ -42,7 +43,10 @@ from utils import (
     parse_losses,
     save_checkpoint,
     CheckpointManager,
-    load_config
+    load_config,
+    data2cuda,
+    build_dataset_class_tokens,
+    reduce_tensor
 )
 import us
 
@@ -102,9 +106,10 @@ def train(cfg):
     for key in cfg.evaluate.task:
         if key == "cls":
             continue
-
         loader = build_seg_dataloader(build_seg_dataset(cfg.evaluate.get(key)))
         val_loaders[key] = loader
+
+    image_net_val_loader = build_loader(cfg.data, "val")
 
     logger = get_logger()
 
@@ -141,6 +146,7 @@ def train(cfg):
         load_checkpoint(cfg, model.module, optimizer, lr_scheduler, scaler)
 
     if cfg.evaluate.eval_only:
+        validate_cls(cfg, image_net_val_loader, model)
         res = evaluate(cfg, model, val_loaders)
         logger.info(res)
         r = ", ".join([f"{v:.2f}" for v in res.values()])
@@ -150,7 +156,7 @@ def train(cfg):
     logger.info("Start training")
     start_time = time.time()
 
-    do_training(cfg, model, data_loader_train, optimizer, lr_scheduler, scaler, val_loaders)
+    do_training(cfg, model, data_loader_train, optimizer, lr_scheduler, scaler, val_loaders, image_net_val_loader)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -158,7 +164,7 @@ def train(cfg):
     dist.barrier()
 
 
-def do_training(config, model, data_loader, optimizer, lr_scheduler, scaler, val_loaders):
+def do_training(config, model, data_loader, optimizer, lr_scheduler, scaler, val_loaders, image_net_val_loader):
     logger = get_logger()
     dist.barrier()
     model.train()
@@ -272,6 +278,7 @@ def do_training(config, model, data_loader, optimizer, lr_scheduler, scaler, val
                 wandb.log(log_stat, step=step)
 
         if step and step % config.evaluate.eval_freq == 0:
+            validate_cls(config, image_net_val_loader, model)
             metrics = evaluate(config, model, val_loaders)
 
             if us.is_global_zero():
@@ -377,6 +384,69 @@ def validate_seg(config, seg_config, data_loader, model):
     dist.barrier()
     return miou_result, metric
 
+@torch.no_grad()
+def validate_cls(config, data_loader, model):
+    if len(data_loader) == 2:
+        data_loader = data_loader[0]
+
+    logger = get_logger()
+    dist.barrier()
+    criterion = torch.nn.CrossEntropyLoss()
+    model.eval()
+
+    batch_time = AverageMeter()
+    acc1_meter = AverageMeter()
+    acc5_meter = AverageMeter()
+
+    text_transform = build_text_transform(text_type='word_aug', max_seq_len=77, max_word=1)
+
+    end = time.time()
+    logger.info('Building zero shot classifier')
+    text_embedding = data2cuda(
+        model.module.build_text_embedding(
+            build_dataset_class_tokens(text_transform, config.evaluate.cls.template, imagenet_classes)))
+    logger.info('Zero shot classifier built')
+
+    for idx, samples in enumerate(data_loader):
+        target = torch.tensor(
+            int(samples.pop('target').decode())).cuda()
+        target = data2cuda(target)
+        target = target.unsqueeze(0)
+
+        # compute output
+        img = samples['image']
+        img = data2cuda(img)
+
+        output = model.module.cls_val(img, text_embedding, config.evaluate.kp_w)
+
+        # handle batch size
+        output = output[None, ...]
+        target = target[None, ...]
+
+        # measure accuracy and record loss
+        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+
+        acc1 = reduce_tensor(acc1)
+        acc5 = reduce_tensor(acc5)
+
+        acc1_meter.update(acc1.item(), target.size(0))
+        acc5_meter.update(acc5.item(), target.size(0))
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if idx % 5000 == 0:
+            memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
+            logger.info(f'Test: [{idx}/{len(data_loader)}]\t'
+                        f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                        f'Acc@1 {acc1_meter.val:.3f} ({acc1_meter.avg:.3f})\t'
+                        f'Acc@5 {acc5_meter.val:.3f} ({acc5_meter.avg:.3f})\t'
+                        f'Mem {memory_used:.0f}MB')
+    logger.info('Clearing zero shot classifier')
+    torch.cuda.empty_cache()
+    logger.info(f' * Acc@1 {acc1_meter.avg:.3f} Acc@5 {acc5_meter.avg:.3f}')
+    dist.barrier()
 
 def main():
     parser = get_argparser()

@@ -10,16 +10,23 @@ data:
       gcc3m:
         type: img_txt_pair
         path: ./data/gcc3m
-        prefix: gcc-train-{000000..00347}.tar
-        length: 2881393
+        prefix: '{00000..00331}.tar'
+        length: 2798155
       gcc12m:
         type: img_txt_pair
         path: ./data/gcc12m
-        prefix: cc-{000000..001175}.tar
-        length: 11286526
+        prefix: '{00000..01242}.tar'
+        length: 9430392
+      imagenet:
+        type: img_cls_pair
+        path: ./data/imagenet
+        prefix: imagenet-val-{000000..000049}.tar
+        length: 50000
     train:
       - gcc3m
       - gcc12m
+    val:
+      - imagenet
 
   img_aug:
     deit_aug: true
@@ -36,11 +43,11 @@ data:
 train:
   start_step: 0
   total_steps: 50000
-  warmup_steps: 20000
+  warmup_steps: 500
   ust_steps: 0
-  base_lr: 1.6e-3
-  weight_decay: 0.05
-  min_lr: 4e-5
+  base_lr: 4e-5
+  weight_decay: 0.2
+  min_lr: 1e-6
   clip_grad: 5.0
   fp16: true
   fp16_comm: true # use fp16 grad compression for multi-node training
@@ -78,13 +85,13 @@ evaluate:
 
 checkpoint:
   resume: ''
-  save_topk: 0
+  save_topk: 3
   save_all: false  # if true, save every evaluation step
 
 
 model_name: "default"  # display name in the logger
 output: ???
-tag: default
-print_freq: 20
+tag: "default"
+print_freq: 50
 seed: 0
-wandb: false
+wandb: true

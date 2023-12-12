@@ -178,6 +178,39 @@ class TCL(nn.Module):
         return ret
 
     @torch.no_grad()
+    def cls_val(self, image, text, kp_w):
+        if len(image.shape) == 3:
+            image = image[None, ...]
+        _ , clip_image_feats = self.clip_image_encoder.tcl_forward(image, ret_feats=True)
+        image_feat = clip_image_feats[0]
+        #_ , patch_token = img_feats[0:1, ...], img_feats[1:, ...]
+
+        # upsampled embeddings [B, D, H//4, W//4]
+        image_emb = self.masker.image_encoder(image, image_feat)
+        image_emb = image_emb.view(
+            image_emb.shape[0], image_emb.shape[1],
+            image_emb.shape[2] * image_emb.shape[3]
+        )
+
+        image_emb = us.normalize(image_emb, dim=1)
+
+        # simmap [B, N, H//4, W//4]
+        # soft mask (logit-like) is required
+        simmap = torch.einsum("b c l, n c -> b n l", image_emb, text)
+        simmap = simmap.softmax(dim=-1)
+
+        # [B, N, H//4, W//4] x [B, D, H//4, W//4] = [B, N, D]
+        tcl_img_feats = torch.einsum(
+            "bnl, bdl -> bnd",
+             simmap, image_emb
+        )
+        tcl_img_feats = us.normalize(tcl_img_feats, dim=-1)
+
+        # [B, N, D] x [N, D] -> [B, N]
+        predict = torch.einsum("bad,ad->ba", tcl_img_feats, text)
+        return predict.squeeze()
+
+    @torch.no_grad()
     def build_text_embedding(self, text):
         """
         Args:
