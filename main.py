@@ -417,7 +417,7 @@ def validate_cls(config, data_loader, model):
         img = samples['image']
         img = data2cuda(img)
 
-        output = model.module.cls_val(img, text_embedding, config.evaluate.kp_w)
+        output = model.module.cls_val(img, text_embedding, config.evaluate.kp_w, topk=config.evaluate.topk)
 
         # handle batch size
         output = output[None, ...]

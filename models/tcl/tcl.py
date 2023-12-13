@@ -15,6 +15,9 @@ from models.tcl.pamr import PAMR
 from models.tcl.masker import Masker
 import us
 
+import numpy as np
+SMALL_NUM = np.log(1e-45)
+
 
 def tv_loss(x):
     """Total variation loss
@@ -178,15 +181,16 @@ class TCL(nn.Module):
         return ret
 
     @torch.no_grad()
-    def cls_val(self, image, text, kp_w):
+    def cls_val(self, image, text, kp_w, topk=0):
         if len(image.shape) == 3:
             image = image[None, ...]
-        _ , clip_image_feats = self.clip_image_encoder.tcl_forward(image, ret_feats=True)
+        # patch tokens, 
+        img_emb, clip_image_feats = self.clip_image_encoder.tcl_forward(image, ret_feats=True)
         image_feat = clip_image_feats[0]
-        #_ , patch_token = img_feats[0:1, ...], img_feats[1:, ...]
 
         # upsampled embeddings [B, D, H//4, W//4]
         image_emb = self.masker.image_encoder(image, image_feat)
+        h, w = image_emb.shape[2:]
         image_emb = image_emb.view(
             image_emb.shape[0], image_emb.shape[1],
             image_emb.shape[2] * image_emb.shape[3]
@@ -194,12 +198,33 @@ class TCL(nn.Module):
 
         image_emb = us.normalize(image_emb, dim=1)
 
-        # simmap [B, N, H//4, W//4]
+        # simmap [B, N, H//4 * W//4]
         # soft mask (logit-like) is required
         simmap = torch.einsum("b c l, n c -> b n l", image_emb, text)
+        if topk == 0:
+            pass
+        elif topk > 0:
+            # [B, N, K]
+            topk, indices = simmap.topk(topk, dim=-1)
+            simmap = torch.ones(simmap.shape, device=simmap.device) * SMALL_NUM
+            simmap = simmap.scatter_(2, indices, topk)
+        else:
+            # get soft mask ala segmentation from simmap
+            # TODO background class??
+            _, soft_mask = self.masker.sim2mask(simmap, deterministic=True)
+            mask = soft_mask.view(soft_mask.shape[0], soft_mask.shape[1], h, w)
+            mask = self.apply_pamr(image, mask)
+            mask = self.kp_branch(img_emb, text, mask, kp_w=kp_w)
+            # [B, N, H//4 * W//4]
+            mask = mask.view(soft_mask.shape[0], soft_mask.shape[1], h * w)
+            # argmax for each pixel to determine the class -> [B, 1, K]
+            top1, indices = mask.topk(1, dim=1)
+            simmap = torch.ones(simmap.shape, device=simmap.device) * SMALL_NUM
+            simmap = simmap.scatter_(1, indices, top1)
+
         simmap = simmap.softmax(dim=-1)
 
-        # [B, N, H//4, W//4] x [B, D, H//4, W//4] = [B, N, D]
+        # [B, N, H//4 * W//4] x [B, D, H//4 * W//4] = [B, N, D]
         tcl_img_feats = torch.einsum(
             "bnl, bdl -> bnd",
              simmap, image_emb
