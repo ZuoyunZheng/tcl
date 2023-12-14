@@ -417,7 +417,17 @@ def validate_cls(config, data_loader, model):
         img = samples['image']
         img = data2cuda(img)
 
-        output = model.module.cls_val(img, text_embedding, config.evaluate.kp_w, topk=config.evaluate.topk)
+        output = model.module.cls_val(
+            img, text_embedding,
+            clip_cls=config.evaluate.clip_cls, clip_patch=config.evaluate.clip_patch,
+            topk=config.evaluate.topk,
+            threshold=config.evaluate.threshold, threshold_value=config.evaluate.threshold_value,
+            quantile=config.evaluate.quantile, quantile_value=config.evaluate.quantile_value,
+            tcl_mask_emb=config.evaluate.tcl_mask_emb,
+            tcl_mask_img=config.evaluate.tcl_mask_img,
+            tcl_mask_refine=config.evaluate.tcl_mask_refine,
+            kp_w=config.evaluate.kp_w,
+        )
 
         # handle batch size
         output = output[None, ...]

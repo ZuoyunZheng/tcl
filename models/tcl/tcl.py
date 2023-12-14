@@ -181,58 +181,91 @@ class TCL(nn.Module):
         return ret
 
     @torch.no_grad()
-    def cls_val(self, image, text, kp_w, topk=0):
+    def cls_val(
+         self, image, text, 
+         clip_cls=False, clip_patch=False,
+         topk=0, 
+         threshold=False, threshold_value=0.0,
+         quantile=False, quantile_value=0.8,
+         tcl_mask_emb=False, tcl_mask_img=False, tcl_mask_refine=True, kp_w=0.3
+    ):
         if len(image.shape) == 3:
             image = image[None, ...]
-        # patch tokens, 
         img_emb, clip_image_feats = self.clip_image_encoder.tcl_forward(image, ret_feats=True)
         image_feat = clip_image_feats[0]
+        cls_token, patch_token = image_feat[0:1, ...], image_feat[1:, ...]
 
-        # upsampled embeddings [B, D, H//4, W//4]
-        image_emb = self.masker.image_encoder(image, image_feat)
-        h, w = image_emb.shape[2:]
-        image_emb = image_emb.view(
-            image_emb.shape[0], image_emb.shape[1],
-            image_emb.shape[2] * image_emb.shape[3]
-        )
+        import pdb; pdb.set_trace()
+        if clip_cls:
+            cls_token = self.clip_image_encoder.clip_proj(cls_token)
+            return cls_token.squeeze() @ text.T
 
+        if clip_patch:
+            # patch token projected to same dim as text embeddings [B, D, L]
+            image_emb = self.clip_image_encoder.clip_proj(patch_token).permute(1,2,0)
+            h = w = int(image_emb.shape[2] ** 0.5)
+        else:
+            # tcl upsampled embeddings [B, D, H//4 * W//4]
+            image_emb = self.masker.image_encoder(image, image_feat)
+            h, w = image_emb.shape[2:]
+            image_emb = image_emb.view(
+                image_emb.shape[0], image_emb.shape[1],
+                image_emb.shape[2] * image_emb.shape[3]
+            )
         image_emb = us.normalize(image_emb, dim=1)
 
-        # simmap [B, N, H//4 * W//4]
-        # soft mask (logit-like) is required
+        # simmap [B, N, (H//4 * W//4)|L]
         simmap = torch.einsum("b c l, n c -> b n l", image_emb, text)
         if topk == 0:
+            # vanilla PACL
             pass
-        elif topk > 0:
+        else:
+            # topk pixels per image and class
             # [B, N, K]
             topk, indices = simmap.topk(topk, dim=-1)
             simmap = torch.ones(simmap.shape, device=simmap.device) * SMALL_NUM
             simmap = simmap.scatter_(2, indices, topk)
-        else:
+
+        if threshold:
+            simmap = torch.where(simmap < threshold_value, SMALL_NUM, simmap)
+
+        if quantile:
+            # no need to flatten for here B = 1
+            quants = torch.quantile(simmap, quantile_value, interpolation="higher")
+            simmap = torch.where(simmap < quants, SMALL_NUM, simmap)
+        
+        if tcl_mask_emb or tcl_mask_img:
             # get soft mask ala segmentation from simmap
             # TODO background class??
             _, soft_mask = self.masker.sim2mask(simmap, deterministic=True)
             mask = soft_mask.view(soft_mask.shape[0], soft_mask.shape[1], h, w)
-            mask = self.apply_pamr(image, mask)
-            mask = self.kp_branch(img_emb, text, mask, kp_w=kp_w)
+            if tcl_mask_refine:
+                mask = self.apply_pamr(image, mask)
+                mask = self.kp_branch(img_emb, text, mask, kp_w=kp_w)
             # [B, N, H//4 * W//4]
             mask = mask.view(soft_mask.shape[0], soft_mask.shape[1], h * w)
+
+            if tcl_mask_img:
+                raise NotImplementedError
+                # interpolate mask
+                # apply mask on image
+                # forward clip again -> clip classfication
+
             # argmax for each pixel to determine the class -> [B, 1, K]
             top1, indices = mask.topk(1, dim=1)
             simmap = torch.ones(simmap.shape, device=simmap.device) * SMALL_NUM
             simmap = simmap.scatter_(1, indices, top1)
 
+        zeros = simmap == SMALL_NUM
         simmap = simmap.softmax(dim=-1)
+        # fix for when class absent, the representing weight is an average
+        simmap = torch.where(zeros, 0.0, simmap)
 
-        # [B, N, H//4 * W//4] x [B, D, H//4 * W//4] = [B, N, D]
-        tcl_img_feats = torch.einsum(
-            "bnl, bdl -> bnd",
-             simmap, image_emb
-        )
-        tcl_img_feats = us.normalize(tcl_img_feats, dim=-1)
-
+        # [B, N, (H//4 * W//4)|L] x [B, D, (H//4 * W//4)|L] = [B, N, D]
+        weighted_img_feats = torch.einsum("bnl, bdl -> bnd", simmap, image_emb)
+        weighted_img_feats = us.normalize(weighted_img_feats, dim=-1)
         # [B, N, D] x [N, D] -> [B, N]
-        predict = torch.einsum("bad,ad->ba", tcl_img_feats, text)
+        predict = torch.einsum("bad,ad->ba", weighted_img_feats, text)
         return predict.squeeze()
 
     @torch.no_grad()

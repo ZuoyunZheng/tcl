@@ -63,6 +63,16 @@ evaluate:
   cls:
     template: subset
   eval_only: true
+  clip_cls: false
+  clip_patch: false
+  topk: 2
+  threshold: true
+  threshold_value: 0.0
+  quantile: true
+  quantile_value: 0.8
+  tcl_mask_emb: true
+  tcl_mask_img: false
+  tcl_mask_refine: true
 
 checkpoint:
   save_topk: 0
