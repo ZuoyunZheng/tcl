@@ -76,6 +76,10 @@ def get_argparser():
     parser.add_argument("--eval", action="store_true", help="Perform evaluation only")
     parser.add_argument("--wandb", action="store_true", help="Use W&B to log experiments")
 
+    parser.add_argument("--threshold", type=float, help="Threshold value")
+    parser.add_argument("--quantile", type=float, help="Quantile value")
+    parser.add_argument("--topk", type=int, help="Top k")
+
     return parser
 
 

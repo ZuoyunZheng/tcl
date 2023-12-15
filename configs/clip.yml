@@ -9,8 +9,8 @@ data:
 model:
   type: TCL
   clip_model: ViT-B/16  # NOTE only ViT-based backbones are supported.
-  ie_freeze: 11  # index [1 ~ 12]
-  ie_ignore_last_attn: true # use MaskCLIP
+  ie_freeze: 12  # index [1 ~ 12]
+  ie_ignore_last_attn: false
   masker:
     type: Masker
     decoder:
@@ -63,16 +63,17 @@ evaluate:
   cls:
     template: subset
   eval_only: true
+  # change follwing 2
   clip_cls: false
-  clip_patch: false
+  clip_patch: true
   topk: 0
-  threshold: true
+  threshold: false
   threshold_value: 0.0
-  quantile: true
+  quantile: false
   quantile_value: 0.8
-  tcl_mask_emb: true
-  tcl_mask_img: true
-  tcl_mask_refine: true
+  tcl_mask_emb: false
+  tcl_mask_img: false
+  tcl_mask_refine: false
 
 checkpoint:
   save_topk: 0

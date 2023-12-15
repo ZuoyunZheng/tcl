@@ -66,12 +66,12 @@ evaluate:
   clip_cls: false
   clip_patch: false
   topk: 0
-  threshold: true
+  threshold: false
   threshold_value: 0.0
-  quantile: true
+  quantile: false
   quantile_value: 0.8
   tcl_mask_emb: true
-  tcl_mask_img: true
+  tcl_mask_img: false
   tcl_mask_refine: true
 
 checkpoint:

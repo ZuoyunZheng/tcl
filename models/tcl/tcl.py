@@ -191,11 +191,20 @@ class TCL(nn.Module):
     ):
         if len(image.shape) == 3:
             image = image[None, ...]
+        H, W = image.shape[2:]  # original image shape
+
+        # pad image when (image_size % patch_size != 0)
+        pad = self.compute_padsize(H, W, self.patch_size)
+        if any(pad):
+            image = F.pad(image, pad)  # zero padding
+
+        # padded image size
+        pH, pW = image.shape[2:]
+
         img_emb, clip_image_feats = self.clip_image_encoder.tcl_forward(image, ret_feats=True)
         image_feat = clip_image_feats[0]
         cls_token, patch_token = image_feat[0:1, ...], image_feat[1:, ...]
 
-        import pdb; pdb.set_trace()
         if clip_cls:
             cls_token = self.clip_image_encoder.clip_proj(cls_token)
             return cls_token.squeeze() @ text.T
@@ -242,16 +251,28 @@ class TCL(nn.Module):
             if tcl_mask_refine:
                 mask = self.apply_pamr(image, mask)
                 mask = self.kp_branch(img_emb, text, mask, kp_w=kp_w)
-            # [B, N, H//4 * W//4]
-            mask = mask.view(soft_mask.shape[0], soft_mask.shape[1], h * w)
 
             if tcl_mask_img:
-                raise NotImplementedError
                 # interpolate mask
-                # apply mask on image
-                # forward clip again -> clip classfication
+                mask = F.interpolate(mask, (pH, pW), mode='bilinear')  # [B, N, H, W]
+                # mask cutting for padded image
+                if any(pad):
+                    l, t = pad[0], pad[2]
+                    mask = mask[:, :, t:t+H, l:l+W]
+                # apply mask on image and forward clip again
+                # mask cutting for padded image
+                # [B, N, H, W] * [B, 3, H, W] -> [B * N, 3, H, W] -> [B * N, L+1, D]
+                img_emb, clip_image_feats = self.clip_image_encoder.tcl_forward(
+                     mask.transpose(0, 1) * image,
+                     ret_feats=True
+                )
+                cls_token = clip_image_feats[0][0:1, ...]  # [1, N, D]
+                cls_token = self.clip_image_encoder.clip_proj(cls_token)
+                return (cls_token.squeeze() * text).sum(dim=1)
 
-            # argmax for each pixel to determine the class -> [B, 1, K]
+            # [B, N, (H//4 * W//4)|L]
+            mask = mask.view(soft_mask.shape[0], soft_mask.shape[1], h * w)
+            # argmax for each pixel to determine the class -> [B, 1, (H//4 * W//4)|L]
             top1, indices = mask.topk(1, dim=1)
             simmap = torch.ones(simmap.shape, device=simmap.device) * SMALL_NUM
             simmap = simmap.scatter_(1, indices, top1)

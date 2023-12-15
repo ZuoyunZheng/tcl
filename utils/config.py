@@ -58,6 +58,15 @@ def get_config(args):
     if hasattr(args, "wandb") and args.wandb:
         cfg.wandb = args.wandb
 
+    if hasattr(args, "threshold") and args.threshold:
+        cfg.evaluate.threshold_value = args.threshold
+
+    if hasattr(args, "quantile") and args.quantile:
+        cfg.evaluate.quantile_value = args.quantile
+
+    if hasattr(args, "topk") and args.topk:
+        cfg.evaluate.topk = args.topk
+
     OmegaConf.set_readonly(cfg, True)
 
     return cfg

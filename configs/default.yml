@@ -94,4 +94,4 @@ output: ???
 tag: "default"
 print_freq: 50
 seed: 0
-wandb: true
+wandb: false
